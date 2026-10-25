@@ -13,7 +13,17 @@ DEFAULT_BASE = "https://micompress.com"
 UTM = "utm_source=pypi&utm_medium=cli&utm_campaign=extend"
 # A branded User-Agent identifies the client and avoids default urllib UA being
 # blocked by the WAF (Cloudflare 403s "Python-urllib/*").
-USER_AGENT = "micompress-python/0.1.0 (+https://micompress.com)"
+USER_AGENT = "micompress-python/0.1.1 (+https://micompress.com)"
+# Explicit channel id for server-side attribution (see extend/README.md).
+CLIENT_ID = "python/0.1.1"
+# Where users get a personal API key, and where to upgrade when its quota runs out.
+ACCOUNT_URL = DEFAULT_BASE + "/account"
+PLANS_URL = DEFAULT_BASE + "/plans"
+
+
+def _with_hint(message, lead, url):
+    """Append "<lead> <url>" unless the server's message already names the URL."""
+    return message if url.split("://")[-1] in message else "%s %s %s" % (message, lead, url)
 
 
 class CompressError(Exception):
@@ -42,8 +52,12 @@ def _encode_multipart(text_fields, file_field, filename, content):
 
 
 def compress_file(input_path, base_url=DEFAULT_BASE, preset=None, max_width=None,
-                  token=None, timeout=120):
-    """Compress a single file. Returns (data_bytes, meta_dict)."""
+                  token=None, timeout=120, api_key=None):
+    """Compress a single file. Returns (data_bytes, meta_dict).
+
+    api_key: personal API key (``mc_...``) from micompress.com/account.
+    token:   legacy login JWT; still sent as a Bearer header if given.
+    """
     base_url = (base_url or DEFAULT_BASE).rstrip("/")
     filename = os.path.basename(input_path)
     category = category_for(filename)
@@ -70,7 +84,10 @@ def compress_file(input_path, base_url=DEFAULT_BASE, preset=None, max_width=None
         "Content-Type": "multipart/form-data; boundary=%s" % boundary,
         "Accept": "application/json",
         "User-Agent": USER_AGENT,
+        "X-MiCompress-Client": CLIENT_ID,
     }
+    if api_key:
+        headers["X-API-Key"] = api_key
     if token:
         headers["Authorization"] = "Bearer %s" % token
 
@@ -84,11 +101,18 @@ def compress_file(input_path, base_url=DEFAULT_BASE, preset=None, max_width=None
             payload = json.loads(raw)
         except ValueError:
             raise CompressError("HTTP %s" % e.code, "API_ERROR")
-        if e.code == 401 and payload.get("code") == "LOGIN_REQUIRED":
+        code = payload.get("code")
+        if e.code == 401 and code == "LOGIN_REQUIRED":
             raise CompressError(
-                "File exceeds the anonymous size limit. Pass --token <jwt> (log in at %s) "
-                "or compress it online at %s/?%s" % (base_url, base_url, UTM),
+                "File exceeds the anonymous size limit. Pass --api-key <key> (free key at %s) "
+                "or compress it online at %s/?%s" % (ACCOUNT_URL, base_url, UTM),
                 "LOGIN_REQUIRED")
+        if code == "INVALID_API_KEY":
+            raise CompressError(_with_hint(payload.get("error") or "Invalid API key.",
+                                           "Check your key at", ACCOUNT_URL), code)
+        if code in ("API_QUOTA_REACHED", "USAGE_LIMIT_REACHED"):
+            raise CompressError(_with_hint(payload.get("error") or "Monthly compression quota reached.",
+                                           "Upgrade for a bigger monthly quota:", PLANS_URL), code)
         raise CompressError(payload.get("error", "HTTP %s" % e.code),
                             payload.get("code", "API_ERROR"))
     except urllib.error.URLError as e:

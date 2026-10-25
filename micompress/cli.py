@@ -44,7 +44,10 @@ def build_parser():
                    default="recommended", help="Compression strength")
     p.add_argument("--max-width", type=int, metavar="PX",
                    help="Resize images down to this max width")
-    p.add_argument("--token", help="Auth token for higher size limits")
+    p.add_argument("--api-key", metavar="KEY",
+                   help="Personal API key from micompress.com/account "
+                        "(default: $MICOMPRESS_API_KEY)")
+    p.add_argument("--token", help="Legacy login token (JWT); prefer --api-key")
     p.add_argument("--api", default=DEFAULT_BASE, help="API base URL")
     p.add_argument("--suffix", default="-min", help='Default output suffix (default "-min")')
     p.add_argument("--json", action="store_true", help="Machine-readable JSON output")
@@ -59,6 +62,9 @@ def main(argv=None):
         build_parser().print_help()
         return 1
 
+    # Flag wins over the environment variable.
+    api_key = (args.api_key or os.environ.get("MICOMPRESS_API_KEY") or "").strip() or None
+
     results = []
     failed = 0
     total_in = 0
@@ -69,6 +75,7 @@ def main(argv=None):
             data, meta = compress_file(
                 f, base_url=args.api, preset=args.preset,
                 max_width=args.max_width, token=args.token,
+                api_key=api_key,
             )
             dest = out_path_for(f, args.output, args.suffix)
             with open(dest, "wb") as fh:
